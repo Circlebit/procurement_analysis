@@ -1,7 +1,13 @@
 from lxml import etree
 import json
+import zipfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def extract_single_notice(xml_content: bytes) -> Dict:
     """Extract key fields from one eForms XML notice using lxml-native approach"""
@@ -150,6 +156,110 @@ def extract_single_notice(xml_content: bytes) -> Dict:
     
     return notice
 
+def process_zip_to_json(zip_path: Path, output_dir: Path) -> Tuple[int, int, List[str]]:
+    """
+    Process all XML files in a ZIP and extract to individual JSON files
+    
+    Args:
+        zip_path: Path to the ZIP file containing eForms XML files
+        output_dir: Directory where JSON files will be saved
+        
+    Returns:
+        Tuple of (successful_count, failed_count, failed_files)
+    """
+    
+    # Create output directory
+    output_dir.mkdir(exist_ok=True, parents=True)
+    
+    successful_count = 0
+    failed_count = 0
+    failed_files = []
+    
+    logger.info(f"Processing ZIP file: {zip_path}")
+    
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Get all XML files in the ZIP
+            xml_files = [f for f in zip_ref.namelist() if f.endswith('.xml')]
+            total_files = len(xml_files)
+            
+            logger.info(f"Found {total_files} XML files in ZIP")
+            
+            for i, xml_filename in enumerate(xml_files, 1):
+                try:
+                    # Read XML content directly from ZIP
+                    with zip_ref.open(xml_filename) as xml_file:
+                        xml_content = xml_file.read()
+                    
+                    # Extract data using our function
+                    notice_data = extract_single_notice(xml_content)
+                    
+                    # Generate output filename based on notice_id or XML filename
+                    notice_id = notice_data.get("notice_id")
+                    if notice_id:
+                        json_filename = f"{notice_id}.json"
+                    else:
+                        # Fallback to XML filename if no notice_id
+                        base_name = Path(xml_filename).stem
+                        json_filename = f"{base_name}.json"
+                    
+                    # Save as JSON
+                    json_path = output_dir / json_filename
+                    with open(json_path, 'w', encoding='utf-8') as json_file:
+                        json.dump(notice_data, json_file, indent=2, ensure_ascii=False)
+                    
+                    successful_count += 1
+                    
+                    # Progress logging every 100 files
+                    if i % 100 == 0 or i == total_files:
+                        logger.info(f"Processed {i}/{total_files} files ({successful_count} successful, {failed_count} failed)")
+                
+                except Exception as e:
+                    failed_count += 1
+                    failed_files.append(xml_filename)
+                    logger.error(f"Failed to process {xml_filename}: {e}")
+                    continue
+    
+    except zipfile.BadZipFile:
+        logger.error(f"Invalid ZIP file: {zip_path}")
+        return 0, 0, [str(zip_path)]
+    except Exception as e:
+        logger.error(f"Error processing ZIP file {zip_path}: {e}")
+        return 0, 0, [str(zip_path)]
+    
+    logger.info(f"Processing complete: {successful_count} successful, {failed_count} failed")
+    
+    if failed_files:
+        # Save failed files list for debugging
+        failed_log_path = output_dir / "failed_files.txt"
+        with open(failed_log_path, 'w') as f:
+            f.write('\n'.join(failed_files))
+        logger.info(f"Failed files list saved to: {failed_log_path}")
+    
+    return successful_count, failed_count, failed_files
+
+def test_zip_processing():
+    """Test ZIP processing with downloaded data"""
+    # Use one of your downloaded ZIP files
+    zip_path = Path("data/zip/eforms_2024-12.zip")  # Adjust path as needed
+    output_dir = Path("data/extracted_json")
+    
+    if not zip_path.exists():
+        logger.error(f"ZIP file not found: {zip_path}")
+        return
+    
+    logger.info("Starting ZIP processing test...")
+    successful, failed, failed_files = process_zip_to_json(zip_path, output_dir)
+    
+    logger.info(f"Test complete!")
+    logger.info(f"Successfully processed: {successful} files")
+    logger.info(f"Failed: {failed} files")
+    
+    if successful > 0:
+        # Show a sample of the extracted files
+        json_files = list(output_dir.glob("*.json"))[:3]
+        logger.info(f"Sample JSON files created: {[f.name for f in json_files]}")
+
 def test_single_file():
     """Test with the Kassel XML file"""
     xml_path = Path("data/eforms-kassel-1.xml")
@@ -158,7 +268,17 @@ def test_single_file():
         xml_content = f.read()
         
     result = extract_single_notice(xml_content)
+    
+    # Print with proper UTF-8 encoding
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":
-    test_single_file()
+    # # Test single file first
+    # print("Testing single file extraction:")
+    # test_single_file()
+    
+    # print("\n" + "="*50 + "\n")
+    
+    # Test ZIP processing
+    print("Testing ZIP processing:")
+    test_zip_processing()
